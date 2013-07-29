@@ -371,6 +371,9 @@ void* send_info(void* arg){
 						errornum = 0;
 					}	
 				}
+				else{
+					errornum = --errornum > 0 ? errornum : 0;
+				}
 			}
 		}
 		else{
