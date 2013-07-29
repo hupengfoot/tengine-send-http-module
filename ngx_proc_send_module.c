@@ -17,12 +17,6 @@ static void ngx_proc_send_exit_process(ngx_cycle_t *cycle);
 static void ngx_proc_send_accept(ngx_event_t *ev);
 void* send_info(void* arg);
 
-static char  *week[] = { "Sunday", "Monday", "Tuesday", "Wednesday", "Thursday",
-	"Friday", "Saturday" };
-
-static char  *months[] = { "January", "February", "March", "April", "May",
-	"June", "July", "August", "Semptember", "October",
-	"November", "December" };
 char buf[BUFSIZE][201];
 int start = 0;
 int end = 0 ;
@@ -46,7 +40,7 @@ static ngx_command_t ngx_proc_send_commands[] = {
 		offsetof(ngx_proc_send_conf_t, port),
 		NULL },
 
-	{ ngx_string("send"),
+	{ ngx_string("daytime"),
 		NGX_PROC_CONF|NGX_CONF_FLAG,
 		ngx_conf_set_flag_slot,
 		NGX_PROC_CONF_OFFSET,
@@ -221,10 +215,6 @@ ngx_proc_send_process_init(ngx_cycle_t *cycle)
 	static ngx_int_t
 ngx_proc_send_loop(ngx_cycle_t *cycle)
 {
-	ngx_log_error(NGX_LOG_EMERG, cycle->log, 0, "send %V",
-			&ngx_cached_http_time);
-	//CURL *curl;
-
 	ngx_proc_send_conf_t  *pbcf;
 	pbcf = ngx_proc_get_conf(cycle->conf_ctx, ngx_proc_send_module);
 	while(1){
@@ -238,16 +228,6 @@ ngx_proc_send_loop(ngx_cycle_t *cycle)
 			if(end == start){
 				__sync_bool_compare_and_swap(&start, end, (end + 1) % BUFSIZE);
 			}
-
-			//			memset(out, 0, 200);
-			//			sprintf(out, "192.168.22.95/%s", buf[i]);
-			//			curl = curl_easy_init();
-			//			curl_easy_setopt(curl, CURLOPT_URL, out);
-			//			//curl_easy_setopt(curl, CURLOPT_VERBOSE, 1L);
-			//			curl_easy_setopt(curl, CURLOPT_TIMEOUT, 5);
-			//			curl_easy_setopt(curl, CURLOPT_HTTPGET, "");
-			//			curl_easy_perform(curl);
-			//			curl_easy_cleanup(curl);
 		}
 	}
 	return NGX_OK;
@@ -268,7 +248,7 @@ ngx_proc_send_exit_process(ngx_cycle_t *cycle)
 	static void
 ngx_proc_send_accept(ngx_event_t *ev)
 {
-	u_char             sa[NGX_SOCKADDRLEN], buf[256], *p;
+	u_char             sa[NGX_SOCKADDRLEN];
 	socklen_t          socklen;
 	ngx_socket_t       s;
 	ngx_connection_t  *lc;
@@ -282,21 +262,6 @@ ngx_proc_send_accept(ngx_event_t *ev)
 	if (ngx_nonblocking(s) == -1) {
 		goto finish;
 	}
-
-	/*
-	   Daytime Protocol
-
-http://tools.ietf.org/html/rfc867
-
-Weekday, Month Day, Year Time-Zone
-	 */
-	p = ngx_sprintf(buf, "%s, %s, %d, %d, %d:%d:%d-%s %d",
-			week[ngx_cached_tm->tm_wday],
-			months[ngx_cached_tm->tm_mon],
-			ngx_cached_tm->tm_mday, ngx_cached_tm->tm_year,
-			ngx_cached_tm->tm_hour, ngx_cached_tm->tm_min,
-			ngx_cached_tm->tm_sec, ngx_cached_tm->tm_zone);
-	ngx_write_fd(s, buf, p - buf);
 
 finish:
 	ngx_close_socket(s);
