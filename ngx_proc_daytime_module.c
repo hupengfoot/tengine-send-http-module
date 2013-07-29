@@ -41,6 +41,7 @@ typedef struct {
 	ngx_flag_t       enable;
 	ngx_uint_t       port;
 	ngx_socket_t     fd;
+	ngx_str_t		destination;
 } ngx_proc_daytime_conf_t;
 
 
@@ -58,6 +59,13 @@ static ngx_command_t ngx_proc_daytime_commands[] = {
 		ngx_conf_set_flag_slot,
 		NGX_PROC_CONF_OFFSET,
 		offsetof(ngx_proc_daytime_conf_t, enable),
+		NULL },
+	
+	{ ngx_string("destination"),
+		NGX_PROC_CONF|NGX_CONF_FLAG,
+		ngx_conf_set_str_slot,
+		NGX_PROC_CONF_OFFSET,
+		offsetof(ngx_proc_daytime_conf_t, destination),
 		NULL },
 
 
@@ -225,6 +233,8 @@ ngx_proc_daytime_loop(ngx_cycle_t *cycle)
 			&ngx_cached_http_time);
 	//CURL *curl;
 
+	ngx_proc_daytime_conf_t  *pbcf;
+	pbcf = ngx_proc_get_conf(cycle->conf_ctx, ngx_proc_daytime_module);
 #if SHARE_MEMORY
 	while(1){
 		while(shqueue->next != shqueue->prev){
@@ -248,7 +258,7 @@ ngx_proc_daytime_loop(ngx_cycle_t *cycle)
 #else
 	while(1){
 		pthread_t tid;
-		int err = pthread_create(&tid, NULL, send_info, NULL);
+		int err = pthread_create(&tid, NULL, send_info, pbcf->destination.data);
 		if(err){
 			continue;	
 		}
@@ -346,12 +356,11 @@ void* send_info(void* arg){
 			int p = start;
 			char out[200];
 			memset(out, 0, 200);
-			sprintf(out, "192.168.26.48/%s", buf[p]);
+			sprintf(out, "%s/%s", (char*)arg, buf[p]);
 			if(__sync_bool_compare_and_swap(&start, p, (p + 1) % BUFSIZE)){
 				curl_easy_setopt(curl, CURLOPT_URL, out);
 				//curl_easy_setopt(curl, CURLOPT_VERBOSE, 1L);
 				curl_easy_setopt(curl, CURLOPT_TIMEOUT, 5);
-				curl_easy_setopt(curl, CURLOPT_HTTPGET, "");
 				curl_easy_perform(curl);
 			}
 		}
