@@ -5,7 +5,6 @@
 #include <curl/curl.h>
 #include <pthread.h>
 
-#define SHARE_MEMORY 0
 #define BUFSIZE 2000
 
 static void *ngx_proc_daytime_create_conf(ngx_conf_t *cf);
@@ -16,9 +15,7 @@ static ngx_int_t ngx_proc_daytime_process_init(ngx_cycle_t *cycle);
 static ngx_int_t ngx_proc_daytime_loop(ngx_cycle_t *cycle);
 static void ngx_proc_daytime_exit_process(ngx_cycle_t *cycle);
 static void ngx_proc_daytime_accept(ngx_event_t *ev);
-#if !SHARE_MEMORY
 void* send_info(void* arg);
-#endif
 
 static char  *week[] = { "Sunday", "Monday", "Tuesday", "Wednesday", "Thursday",
 	"Friday", "Saturday" };
@@ -30,12 +27,7 @@ char buf[BUFSIZE][201];
 int start = 0;
 int end = 0 ;
 
-#if SHARE_MEMORY
-extern ngx_queue_t		*shqueue;
-extern ngx_slab_pool_t	*shpool;
-#else
 extern int pipefd[2];
-#endif
 
 typedef struct {
 	ngx_flag_t       enable;
@@ -235,27 +227,6 @@ ngx_proc_daytime_loop(ngx_cycle_t *cycle)
 
 	ngx_proc_daytime_conf_t  *pbcf;
 	pbcf = ngx_proc_get_conf(cycle->conf_ctx, ngx_proc_daytime_module);
-#if SHARE_MEMORY
-	while(1){
-		while(shqueue->next != shqueue->prev){
-			ngx_queue_t* tmp = shqueue->next;
-			ngx_queue_remove(tmp);
-
-			char out[100];
-			memset(out, 0, 100);
-			sprintf(out, "192.168.22.95/%d", *(int*)((u_char*)tmp - 8));
-			curl = curl_easy_init();
-			curl_easy_setopt(curl, CURLOPT_URL, out);
-			//curl_easy_setopt(curl, CURLOPT_VERBOSE, 1L);
-			curl_easy_setopt(curl, CURLOPT_TIMEOUT, 5);
-			curl_easy_setopt(curl, CURLOPT_HTTPGET, "");
-			curl_easy_perform(curl);
-			curl_easy_cleanup(curl);
-			ngx_slab_free(shpool, (u_char*)tmp - 8);
-		}
-		sleep(1);
-	}
-#else
 	while(1){
 		pthread_t tid;
 		int err = pthread_create(&tid, NULL, send_info, pbcf->destination.data);
@@ -279,7 +250,6 @@ ngx_proc_daytime_loop(ngx_cycle_t *cycle)
 			//			curl_easy_cleanup(curl);
 		}
 	}
-#endif
 	return NGX_OK;
 }
 
@@ -320,34 +290,18 @@ http://tools.ietf.org/html/rfc867
 
 Weekday, Month Day, Year Time-Zone
 	 */
-#if SHARE_MEMORY
-	int shnum = *(ngx_int_t*)((u_char*)shqueue->next - 8);
-	if(shqueue->next != shqueue->prev){
-		ngx_queue_t* tmp = shqueue->next;
-		ngx_queue_remove(tmp);
-		ngx_slab_free_locked(shpool, (u_char*)tmp - 8);
-	}
-	p = ngx_sprintf(buf, "%s, %s, %d, %d, %d:%d:%d-%s %d",
-			week[ngx_cached_tm->tm_wday],
-			months[ngx_cached_tm->tm_mon],
-			ngx_cached_tm->tm_mday, ngx_cached_tm->tm_year,
-			ngx_cached_tm->tm_hour, ngx_cached_tm->tm_min,
-			ngx_cached_tm->tm_sec, ngx_cached_tm->tm_zone, shnum);
-#else
 	p = ngx_sprintf(buf, "%s, %s, %d, %d, %d:%d:%d-%s %d",
 			week[ngx_cached_tm->tm_wday],
 			months[ngx_cached_tm->tm_mon],
 			ngx_cached_tm->tm_mday, ngx_cached_tm->tm_year,
 			ngx_cached_tm->tm_hour, ngx_cached_tm->tm_min,
 			ngx_cached_tm->tm_sec, ngx_cached_tm->tm_zone);
-#endif
 	ngx_write_fd(s, buf, p - buf);
 
 finish:
 	ngx_close_socket(s);
 }
 
-#if !SHARE_MEMORY
 void* send_info(void* arg){
 	CURL *curl;
 	int errornum = 0;
@@ -383,4 +337,3 @@ void* send_info(void* arg){
 	curl_easy_cleanup(curl);
 	return NULL;
 }
-#endif
