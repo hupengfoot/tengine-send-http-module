@@ -26,7 +26,7 @@ static char  *week[] = { "Sunday", "Monday", "Tuesday", "Wednesday", "Thursday",
 static char  *months[] = { "January", "February", "March", "April", "May",
 	"June", "July", "August", "Semptember", "October",
 	"November", "December" };
-char buf[BUFSIZE][101];
+char buf[BUFSIZE][201];
 int start = 0;
 int end = 0 ;
 
@@ -262,7 +262,7 @@ ngx_proc_daytime_loop(ngx_cycle_t *cycle)
 		if(err){
 			continue;	
 		}
-		while(read(pipefd[0], buf[end], 100) > 0){
+		while(read(pipefd[0], buf[end], 200) > 0){
 			end = ( end + 1 ) % BUFSIZE;
 			if(end == start){
 				__sync_bool_compare_and_swap(&start, end, (end + 1) % BUFSIZE);
@@ -350,18 +350,27 @@ finish:
 #if !SHARE_MEMORY
 void* send_info(void* arg){
 	CURL *curl;
+	int errornum = 0;
 	curl = curl_easy_init();
 	while(1){
 		if(start != end){
 			int p = start;
-			char out[200];
-			memset(out, 0, 200);
+			char out[300];
+			memset(out, 0, 300);
 			sprintf(out, "%s/%s", (char*)arg, buf[p]);
 			if(__sync_bool_compare_and_swap(&start, p, (p + 1) % BUFSIZE)){
 				curl_easy_setopt(curl, CURLOPT_URL, out);
 				//curl_easy_setopt(curl, CURLOPT_VERBOSE, 1L);
 				curl_easy_setopt(curl, CURLOPT_TIMEOUT, 5);
-				curl_easy_perform(curl);
+				if(curl_easy_perform(curl)){
+					errornum ++;
+					if(errornum > 3){
+						sleep(100);
+						curl_easy_cleanup(curl);
+						curl = curl_easy_init();
+						errornum = 0;
+					}	
+				}
 			}
 		}
 		else{
@@ -369,5 +378,6 @@ void* send_info(void* arg){
 		}
 	}
 	curl_easy_cleanup(curl);
+	return NULL;
 }
 #endif
