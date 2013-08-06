@@ -6,6 +6,7 @@
 #include <pthread.h>
 
 #define BUFSIZE 2000
+#define SENDOUTBUFSIZE 400
 
 static void *ngx_proc_send_create_conf(ngx_conf_t *cf);
 static char *ngx_proc_send_merge_conf(ngx_conf_t *cf, void *parent,
@@ -223,7 +224,7 @@ ngx_proc_send_loop(ngx_cycle_t *cycle)
 		if(err){
 			continue;	
 		}
-		while(read(pipefd[0], buf[end], 200) > 0){
+		while(read(pipefd[0], buf[end], SENDOUTBUFSIZE) > 0){
 			end = ( end + 1 ) % BUFSIZE;
 			if(end == start){
 				__sync_bool_compare_and_swap(&start, end, (end + 1) % BUFSIZE);
@@ -274,8 +275,8 @@ void* send_info(void* arg){
 	while(1){
 		if(start != end){
 			int p = start;
-			char out[300];
-			memset(out, 0, 300);
+			char out[SENDOUTBUFSIZE + 100];
+			memset(out, 0, SENDOUTBUFSIZE + 100);
 			sprintf(out, "%s/%s", (char*)arg, buf[p]);
 			if(__sync_bool_compare_and_swap(&start, p, (p + 1) % BUFSIZE)){
 				curl_easy_setopt(curl, CURLOPT_URL, out);
