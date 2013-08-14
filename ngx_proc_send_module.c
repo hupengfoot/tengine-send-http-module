@@ -7,6 +7,9 @@
 
 #define BUFSIZE 2000
 #define SENDOUTBUFSIZE 400
+#define WRITE_BUFFER_SIZE 1024
+#define READ_WRITE_OFFSET_FILE "offsize_file"
+#define READ_WRITE_FILE "write_buf"
 
 static void *ngx_proc_send_create_conf(ngx_conf_t *cf);
 static char *ngx_proc_send_merge_conf(ngx_conf_t *cf, void *parent,
@@ -17,10 +20,15 @@ static ngx_int_t ngx_proc_send_loop(ngx_cycle_t *cycle);
 static void ngx_proc_send_exit_process(ngx_cycle_t *cycle);
 static void ngx_proc_send_accept(ngx_event_t *ev);
 void* send_info(void* arg);
+int open_fifo();
+
 
 char buf[BUFSIZE][201];
 int start = 0;
-int end = 0 ;
+int end = 0;
+int filenum = 0;
+long* read_write_mmap = NULL; 
+char* write_file = NULL; 
 
 extern int pipefd[2];
 
@@ -30,6 +38,11 @@ typedef struct {
 	ngx_socket_t     fd;
 	ngx_str_t		destination;
 } ngx_proc_send_conf_t;
+
+//typedef struct{
+//	char type;
+//	long offset;
+//}offset_t;
 
 
 static ngx_command_t ngx_proc_send_commands[] = {
@@ -47,7 +60,7 @@ static ngx_command_t ngx_proc_send_commands[] = {
 		NGX_PROC_CONF_OFFSET,
 		offsetof(ngx_proc_send_conf_t, enable),
 		NULL },
-	
+
 	{ ngx_string("destination"),
 		NGX_PROC_CONF|NGX_CONF_FLAG,
 		ngx_conf_set_str_slot,
@@ -138,7 +151,6 @@ ngx_proc_send_prepare(ngx_cycle_t *cycle)
 
 	return NGX_OK;
 }
-
 
 	static ngx_int_t
 ngx_proc_send_process_init(ngx_cycle_t *cycle)
@@ -243,6 +255,8 @@ ngx_proc_send_exit_process(ngx_cycle_t *cycle)
 	pbcf = ngx_proc_get_conf(cycle->conf_ctx, ngx_proc_send_module);
 
 	ngx_close_socket(pbcf->fd);
+	munmap(read_write_mmap, sizeof(long)*2);
+	munmap(write_file, sizeof(char)*WRITE_BUFFER_SIZE*2);
 }
 
 
@@ -269,37 +283,113 @@ finish:
 }
 
 void* send_info(void* arg){
-	CURL *curl;
-	int errornum = 0;
-	curl = curl_easy_init();
+	//CURL *curl;
+	//int errornum = 0;
+	//curl = curl_easy_init();
+	open_fifo();
 	while(1){
 		if(start != end){
 			int p = start;
 			char out[SENDOUTBUFSIZE + 100];
 			memset(out, 0, SENDOUTBUFSIZE + 100);
-			sprintf(out, "%s/%s", (char*)arg, buf[p]);
+			//sprintf(out, "%s/%s", (char*)arg, buf[p]);
+			sprintf(out, "%s\n", buf[p]);
 			if(__sync_bool_compare_and_swap(&start, p, (p + 1) % BUFSIZE)){
-				curl_easy_setopt(curl, CURLOPT_URL, out);
+				//curl_easy_setopt(curl, CURLOPT_URL, out);
 				//curl_easy_setopt(curl, CURLOPT_VERBOSE, 1L);
-				curl_easy_setopt(curl, CURLOPT_TIMEOUT, 5);
-				if(curl_easy_perform(curl)){
-					errornum ++;
-					if(errornum > 3){
-						sleep(100);
-						curl_easy_cleanup(curl);
-						curl = curl_easy_init();
-						errornum = 0;
-					}	
+				//curl_easy_setopt(curl, CURLOPT_TIMEOUT, 5);
+				if((*read_write_mmap >= *(read_write_mmap + 1) && *read_write_mmap < (long)(WRITE_BUFFER_SIZE)) || (*read_write_mmap < *(read_write_mmap + 1) && *read_write_mmap + (long)strlen(out) < *(read_write_mmap + 1))){
+					strcpy(write_file + *read_write_mmap, out);
+					*read_write_mmap = *read_write_mmap + strlen(out);
 				}
-				else{
-					errornum = --errornum > 0 ? errornum : 0;
+				else if(*read_write_mmap >= *(read_write_mmap + 1) && *read_write_mmap > (long)(WRITE_BUFFER_SIZE) && *(read_write_mmap + 1) > (long)strlen(out)){
+					strcpy(write_file, out);
+					*read_write_mmap = strlen(out);
 				}
+				//		if(curl_easy_perform(curl)){
+				//			errornum ++;
+				//			if(errornum > 3){
+				//				sleep(100);
+				//				curl_easy_cleanup(curl);
+				//				curl = curl_easy_init();
+				//				errornum = 0;
+				//			}	
+				//		}
+				//		else{
+				//			errornum = --errornum > 0 ? errornum : 0;
+				//		}
 			}
 		}
 		else{
 			usleep(10);
 		}
 	}
-	curl_easy_cleanup(curl);
+	//curl_easy_cleanup(curl);
 	return NULL;
+}
+
+long get_file_size(char *filename) 
+{ 
+	struct stat f_stat; 
+
+	if( stat( filename, &f_stat ) == -1 ){ 
+		return -1; 
+	} 
+
+	return (long)f_stat.st_size; 
+}
+
+int open_fifo(){
+	int fd = 0;
+	int off_fd = 0;
+	if(access(READ_WRITE_OFFSET_FILE, 0) == -1){
+		off_fd = open(READ_WRITE_OFFSET_FILE, O_CREAT|O_RDWR, 0777);
+		if(off_fd == -1){
+			return -1;
+		}
+		lseek(off_fd, sizeof(long)*2-1, SEEK_SET);
+		write(off_fd,"",1);
+		read_write_mmap = (long*) mmap( NULL,sizeof(long)*2, PROT_READ|PROT_WRITE, MAP_SHARED, off_fd, 0);
+		*read_write_mmap = 0;
+		*(read_write_mmap + 1) = 0;
+	}
+	else{
+		off_fd = open(READ_WRITE_OFFSET_FILE, O_CREAT|O_RDWR, 0777);
+		if(off_fd == -1){
+			return -1;
+		}
+		if(get_file_size(READ_WRITE_OFFSET_FILE) < (long)sizeof(long)*2){
+			lseek(off_fd, sizeof(long)*2-1, SEEK_SET);
+			write(off_fd,"",1);
+			read_write_mmap = (long*) mmap( NULL,sizeof(long)*2, PROT_READ|PROT_WRITE, MAP_SHARED, off_fd, 0);
+			*read_write_mmap = 0;
+			*(read_write_mmap + 1) = 0;
+		}
+		read_write_mmap = (long*) mmap( NULL,sizeof(long)*2, PROT_READ|PROT_WRITE, MAP_SHARED, off_fd, 0);
+	}
+	close(off_fd);
+
+	if(access(READ_WRITE_FILE, 0) == -1){
+		fd = open(READ_WRITE_FILE, O_CREAT|O_RDWR, 0777);
+		if(fd == -1){
+			return -1;
+		}
+		lseek(fd, sizeof(char)*WRITE_BUFFER_SIZE*2 - 1, SEEK_SET);
+		write(fd,"",1);
+		write_file = (char*) mmap( NULL,sizeof(char)*WRITE_BUFFER_SIZE*2, PROT_READ|PROT_WRITE, MAP_SHARED, fd, 0);
+	}
+	else{
+		fd = open(READ_WRITE_FILE, O_CREAT|O_RDWR, 0777);
+		if(fd == -1){
+			return -1;
+		}
+		if(get_file_size(READ_WRITE_FILE) < (long)sizeof(char)*WRITE_BUFFER_SIZE*2){
+			lseek(fd, sizeof(char)*WRITE_BUFFER_SIZE*2, SEEK_SET);
+			write(off_fd,"",1);
+			read_write_mmap = (long*) mmap(NULL, sizeof(char)*WRITE_BUFFER_SIZE*2, PROT_READ|PROT_WRITE, MAP_SHARED, off_fd, 0);
+		}
+		write_file = (char*) mmap( NULL,sizeof(char)*WRITE_BUFFER_SIZE*2, PROT_READ|PROT_WRITE, MAP_SHARED, fd, 0);
+	}
+	close(fd);
+	return 0;
 }
