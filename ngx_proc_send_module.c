@@ -7,9 +7,15 @@
 
 #define BUFSIZE 2000
 #define SENDOUTBUFSIZE 400
-#define WRITE_BUFFER_SIZE 1024
-#define READ_WRITE_OFFSET_FILE "offsize_file"
-#define READ_WRITE_FILE "write_buf"
+
+typedef struct {
+	ngx_flag_t       enable;
+	ngx_uint_t       port;
+	ngx_socket_t     fd;
+	ngx_uint_t       mmap_dat_size;
+	ngx_str_t        mmap_idx;
+	ngx_str_t 	 mmap_dat;
+} ngx_proc_send_conf_t;
 
 static void *ngx_proc_send_create_conf(ngx_conf_t *cf);
 static char *ngx_proc_send_merge_conf(ngx_conf_t *cf, void *parent,
@@ -19,8 +25,9 @@ static ngx_int_t ngx_proc_send_process_init(ngx_cycle_t *cycle);
 static ngx_int_t ngx_proc_send_loop(ngx_cycle_t *cycle);
 static void ngx_proc_send_exit_process(ngx_cycle_t *cycle);
 static void ngx_proc_send_accept(ngx_event_t *ev);
+int createdir(const char *pathname, ngx_cycle_t *cycle);
 void* send_info(void* arg);
-int open_fifo();
+int open_fifo(ngx_cycle_t *cycle);
 
 
 char buf[BUFSIZE][201];
@@ -32,12 +39,6 @@ char* write_file = NULL;
 
 extern int pipefd[2];
 
-typedef struct {
-	ngx_flag_t       enable;
-	ngx_uint_t       port;
-	ngx_socket_t     fd;
-	ngx_str_t		destination;
-} ngx_proc_send_conf_t;
 
 //typedef struct{
 //	char type;
@@ -61,11 +62,25 @@ static ngx_command_t ngx_proc_send_commands[] = {
 		offsetof(ngx_proc_send_conf_t, enable),
 		NULL },
 
-	{ ngx_string("destination"),
-		NGX_PROC_CONF|NGX_CONF_FLAG,
+	{ ngx_string("mmap_dat_size"),
+		NGX_PROC_CONF|NGX_CONF_TAKE1,
+		ngx_conf_set_num_slot,
+		NGX_PROC_CONF_OFFSET,
+		offsetof(ngx_proc_send_conf_t, mmap_dat_size),
+		NULL },
+	
+	{ ngx_string("mmap_dat"),
+		NGX_PROC_CONF|NGX_CONF_TAKE1,
 		ngx_conf_set_str_slot,
 		NGX_PROC_CONF_OFFSET,
-		offsetof(ngx_proc_send_conf_t, destination),
+		offsetof(ngx_proc_send_conf_t, mmap_dat),
+		NULL },
+
+	{ ngx_string("mmap_idx"),
+		NGX_PROC_CONF|NGX_CONF_TAKE1,
+		ngx_conf_set_str_slot,
+		NGX_PROC_CONF_OFFSET,
+		offsetof(ngx_proc_send_conf_t, mmap_idx),
 		NULL },
 
 
@@ -117,6 +132,7 @@ ngx_proc_send_create_conf(ngx_conf_t *cf)
 
 	pbcf->enable = NGX_CONF_UNSET;
 	pbcf->port = NGX_CONF_UNSET_UINT;
+	pbcf->mmap_dat_size= NGX_CONF_UNSET_UINT;
 
 	return pbcf;
 }
@@ -228,12 +244,11 @@ ngx_proc_send_process_init(ngx_cycle_t *cycle)
 	static ngx_int_t
 ngx_proc_send_loop(ngx_cycle_t *cycle)
 {
-	ngx_proc_send_conf_t  *pbcf;
-	pbcf = ngx_proc_get_conf(cycle->conf_ctx, ngx_proc_send_module);
 	while(1){
 		pthread_t tid;
-		int err = pthread_create(&tid, NULL, send_info, pbcf->destination.data);
+		int err = pthread_create(&tid, NULL, send_info, cycle);
 		if(err){
+			ngx_log_error(NGX_LOG_ERR, cycle->log, 0, "create send_info thread fail!" );
 			continue;	
 		}
 		while(read(pipefd[0], buf[end], SENDOUTBUFSIZE) > 0){
@@ -256,7 +271,7 @@ ngx_proc_send_exit_process(ngx_cycle_t *cycle)
 
 	ngx_close_socket(pbcf->fd);
 	munmap(read_write_mmap, sizeof(long)*2);
-	munmap(write_file, sizeof(char)*WRITE_BUFFER_SIZE*2);
+	munmap(write_file, pbcf->mmap_dat_size*2);
 }
 
 
@@ -286,7 +301,11 @@ void* send_info(void* arg){
 	//CURL *curl;
 	//int errornum = 0;
 	//curl = curl_easy_init();
-	open_fifo();
+	ngx_cycle_t *cycle= (ngx_cycle_t*)(arg);
+	ngx_proc_send_conf_t  *pbcf;
+	pbcf = ngx_proc_get_conf(cycle->conf_ctx, ngx_proc_send_module);
+
+	open_fifo(cycle);
 	while(1){
 		if(start != end){
 			int p = start;
@@ -298,13 +317,14 @@ void* send_info(void* arg){
 				//curl_easy_setopt(curl, CURLOPT_URL, out);
 				//curl_easy_setopt(curl, CURLOPT_VERBOSE, 1L);
 				//curl_easy_setopt(curl, CURLOPT_TIMEOUT, 5);
-				if((*read_write_mmap >= *(read_write_mmap + 1) && *read_write_mmap < (long)(WRITE_BUFFER_SIZE)) || (*read_write_mmap < *(read_write_mmap + 1) && *read_write_mmap + (long)strlen(out) < *(read_write_mmap + 1))){
-					strcpy(write_file + *read_write_mmap, out);
-					*read_write_mmap = *read_write_mmap + strlen(out);
+				if((*(read_write_mmap + 1) >= *(read_write_mmap + 2) && *(read_write_mmap + 1) < (long)(pbcf->mmap_dat_size)) || (*(read_write_mmap + 1) < *(read_write_mmap + 2) && *(read_write_mmap + 1) + (long)strlen(out) < *(read_write_mmap + 2))){
+
+					strcpy(write_file + *(read_write_mmap + 1), out);
+					*(read_write_mmap + 1) = *(read_write_mmap + 1) + strlen(out);
 				}
-				else if(*read_write_mmap >= *(read_write_mmap + 1) && *read_write_mmap > (long)(WRITE_BUFFER_SIZE) && *(read_write_mmap + 1) > (long)strlen(out)){
+				else if(*(read_write_mmap + 1) >= *(read_write_mmap + 2) && *(read_write_mmap + 1) > (long)(pbcf->mmap_dat_size) && *(read_write_mmap + 2) > (long)strlen(out)){
 					strcpy(write_file, out);
-					*read_write_mmap = strlen(out);
+					*(read_write_mmap + 1) = strlen(out);
 				}
 				//		if(curl_easy_perform(curl)){
 				//			errornum ++;
@@ -339,57 +359,94 @@ long get_file_size(char *filename)
 	return (long)f_stat.st_size; 
 }
 
-int open_fifo(){
+int createdir(const char *pathname, ngx_cycle_t *cycle){
+	char dirname[256];
+	strcpy(dirname, pathname);
+	int i, len = strlen(dirname);
+	
+	len = strlen(dirname);
+	for(i = 1; i < len; i++){
+		if(dirname[i] == '/'){
+			dirname[i] = 0;
+			if(access(dirname, 0) != 0){
+				if(mkdir(dirname, 0755) == -1){
+					ngx_log_error(NGX_LOG_ERR, cycle->log, 0, "mkdir fail! when create %s", pathname);
+					return -1;
+				}
+			}
+			dirname[i] = '/';
+		}
+	}
+	return 0;
+}
+
+
+int open_fifo(ngx_cycle_t *cycle){
+
+	ngx_proc_send_conf_t  *pbcf;
+	pbcf = ngx_proc_get_conf(cycle->conf_ctx, ngx_proc_send_module);
+
 	int fd = 0;
 	int off_fd = 0;
-	if(access(READ_WRITE_OFFSET_FILE, 0) == -1){
-		off_fd = open(READ_WRITE_OFFSET_FILE, O_CREAT|O_RDWR, 0777);
+	createdir((char*)pbcf->mmap_idx.data, cycle);
+	createdir((char *)pbcf->mmap_dat.data, cycle);
+
+
+	if(access((char*)pbcf->mmap_idx.data, 0) == -1){
+		off_fd = open((char*)pbcf->mmap_idx.data, O_CREAT|O_RDWR, 0777);
 		if(off_fd == -1){
+			ngx_log_error(NGX_LOG_ERR, cycle->log, 0, "create file %V failed", pbcf->mmap_idx);
 			return -1;
 		}
-		lseek(off_fd, sizeof(long)*2-1, SEEK_SET);
+		lseek(off_fd, sizeof(long)*3-1, SEEK_SET);
 		write(off_fd,"",1);
-		read_write_mmap = (long*) mmap( NULL,sizeof(long)*2, PROT_READ|PROT_WRITE, MAP_SHARED, off_fd, 0);
-		*read_write_mmap = 0;
+		read_write_mmap = (long*) mmap( NULL,sizeof(long)*3, PROT_READ|PROT_WRITE, MAP_SHARED, off_fd, 0);
+		*read_write_mmap = (unsigned int)pbcf->mmap_dat_size;
 		*(read_write_mmap + 1) = 0;
+		*(read_write_mmap + 2) = 0;
 	}
 	else{
-		off_fd = open(READ_WRITE_OFFSET_FILE, O_CREAT|O_RDWR, 0777);
+		off_fd = open((char*)pbcf->mmap_idx.data, O_CREAT|O_RDWR, 0777);
 		if(off_fd == -1){
+			ngx_log_error(NGX_LOG_ERR, cycle->log, 0, "open file %V failed", pbcf->mmap_idx);
 			return -1;
 		}
-		if(get_file_size(READ_WRITE_OFFSET_FILE) < (long)sizeof(long)*2){
-			lseek(off_fd, sizeof(long)*2-1, SEEK_SET);
+		if(get_file_size((char*)pbcf->mmap_idx.data) < (long)sizeof(long)*3){
+			lseek(off_fd, sizeof(long)*3-1, SEEK_SET);
 			write(off_fd,"",1);
 			read_write_mmap = (long*) mmap( NULL,sizeof(long)*2, PROT_READ|PROT_WRITE, MAP_SHARED, off_fd, 0);
-			*read_write_mmap = 0;
+			*read_write_mmap = (unsigned int)pbcf->mmap_dat_size;
 			*(read_write_mmap + 1) = 0;
+			*(read_write_mmap + 2) = 0;
 		}
-		read_write_mmap = (long*) mmap( NULL,sizeof(long)*2, PROT_READ|PROT_WRITE, MAP_SHARED, off_fd, 0);
+		read_write_mmap = (long*) mmap( NULL,sizeof(long)*3, PROT_READ|PROT_WRITE, MAP_SHARED, off_fd, 0);
 	}
 	close(off_fd);
 
-	if(access(READ_WRITE_FILE, 0) == -1){
-		fd = open(READ_WRITE_FILE, O_CREAT|O_RDWR, 0777);
+	if(access((char *)pbcf->mmap_dat.data, 0) == -1){
+		fd = open((char *)pbcf->mmap_dat.data, O_CREAT|O_RDWR, 0777);
 		if(fd == -1){
+			ngx_log_error(NGX_LOG_ERR, cycle->log, 0, "open file %V failed", pbcf->mmap_dat);
 			return -1;
 		}
-		lseek(fd, sizeof(char)*WRITE_BUFFER_SIZE*2 - 1, SEEK_SET);
+		lseek(fd, pbcf->mmap_dat_size* 2 - 1, SEEK_SET);
 		write(fd,"",1);
-		write_file = (char*) mmap( NULL,sizeof(char)*WRITE_BUFFER_SIZE*2, PROT_READ|PROT_WRITE, MAP_SHARED, fd, 0);
+		write_file = (char*) mmap( NULL, pbcf->mmap_dat_size*2, PROT_READ|PROT_WRITE, MAP_SHARED, fd, 0);
 	}
 	else{
-		fd = open(READ_WRITE_FILE, O_CREAT|O_RDWR, 0777);
+		fd = open((char *)pbcf->mmap_dat.data, O_CREAT|O_RDWR, 0777);
 		if(fd == -1){
+			ngx_log_error(NGX_LOG_ERR, cycle->log, 0, "open file %V failed", pbcf->mmap_dat);
 			return -1;
 		}
-		if(get_file_size(READ_WRITE_FILE) < (long)sizeof(char)*WRITE_BUFFER_SIZE*2){
-			lseek(fd, sizeof(char)*WRITE_BUFFER_SIZE*2, SEEK_SET);
+		if(get_file_size((char *)pbcf->mmap_dat.data) < (long)pbcf->mmap_dat_size*2){
+			lseek(fd, pbcf->mmap_dat_size*2, SEEK_SET);
 			write(off_fd,"",1);
-			read_write_mmap = (long*) mmap(NULL, sizeof(char)*WRITE_BUFFER_SIZE*2, PROT_READ|PROT_WRITE, MAP_SHARED, off_fd, 0);
+			read_write_mmap = (long*) mmap(NULL, pbcf->mmap_dat_size*2, PROT_READ|PROT_WRITE, MAP_SHARED, off_fd, 0);
 		}
-		write_file = (char*) mmap( NULL,sizeof(char)*WRITE_BUFFER_SIZE*2, PROT_READ|PROT_WRITE, MAP_SHARED, fd, 0);
+		write_file = (char*) mmap(NULL, pbcf->mmap_dat_size*2, PROT_READ|PROT_WRITE, MAP_SHARED, fd, 0);
 	}
+			
 	close(fd);
 	return 0;
 }
