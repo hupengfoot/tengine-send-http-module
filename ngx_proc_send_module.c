@@ -7,6 +7,9 @@
 
 #define BUFSIZE 2000
 #define SENDOUTBUFSIZE 400
+#define DEFAULT_MMAP_DAT_SIZE 1024*1024*1024
+#define DEFAULT_MMAP_DAT "/data/appdatas/cat/mmap.dat"
+#define DEFAULT_MMAP_IDX "/data/appdatas/cat/mmap.idx"
 
 typedef struct {
 	ngx_flag_t       enable;
@@ -132,7 +135,11 @@ ngx_proc_send_create_conf(ngx_conf_t *cf)
 
 	pbcf->enable = NGX_CONF_UNSET;
 	pbcf->port = NGX_CONF_UNSET_UINT;
-	pbcf->mmap_dat_size= NGX_CONF_UNSET_UINT;
+	pbcf->mmap_dat_size = DEFAULT_MMAP_DAT_SIZE;
+	pbcf->mmap_dat.data = NGX_CONF_UNSET;
+	pbcf->mmap_dat.len = NGX_CONF_UNSET;
+	pbcf->mmap_idx.data = NGX_CONF_UNSET;
+	pbcf->mmap_idx.len = NGX_CONF_UNSET;
 
 	return pbcf;
 }
