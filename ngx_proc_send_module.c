@@ -5,7 +5,7 @@
 #include <curl/curl.h>
 #include <pthread.h>
 
-#define BUFSIZE 2000
+#define BUFSIZE 100
 #define SENDOUTBUFSIZE 400
 #define DEFAULT_MMAP_DAT_SIZE 1024*1024*1024
 #define DEFAULT_MMAP_DAT "/data/appdatas/cat/mmap.dat"
@@ -33,7 +33,7 @@ void* send_info(void* arg);
 int open_fifo(ngx_cycle_t *cycle);
 
 
-char buf[BUFSIZE][201];
+char buf[BUFSIZE][SENDOUTBUFSIZE + 1];
 int start = 0;
 int end = 0;
 int filenum = 0;
@@ -71,7 +71,7 @@ static ngx_command_t ngx_proc_send_commands[] = {
 		NGX_PROC_CONF_OFFSET,
 		offsetof(ngx_proc_send_conf_t, mmap_dat_size),
 		NULL },
-	
+
 	{ ngx_string("mmap_dat"),
 		NGX_PROC_CONF|NGX_CONF_TAKE1,
 		ngx_conf_set_str_slot,
@@ -247,13 +247,12 @@ ngx_proc_send_process_init(ngx_cycle_t *cycle)
 	static ngx_int_t
 ngx_proc_send_loop(ngx_cycle_t *cycle)
 {
+	pthread_t tid;
+	int err = pthread_create(&tid, NULL, send_info, cycle);
+	if(err){
+		ngx_log_error(NGX_LOG_ERR, cycle->log, 0, "create send_info thread fail!" );
+	}
 	while(1){
-		pthread_t tid;
-		int err = pthread_create(&tid, NULL, send_info, cycle);
-		if(err){
-			ngx_log_error(NGX_LOG_ERR, cycle->log, 0, "create send_info thread fail!" );
-			continue;	
-		}
 		while(read(pipefd[0], buf[end], SENDOUTBUFSIZE) > 0){
 			end = ( end + 1 ) % BUFSIZE;
 			if(end == start){
@@ -325,19 +324,20 @@ void* send_info(void* arg){
 					*(read_write_mmap + 1) = *(read_write_mmap + 1) + strlen(out);
 				}
 				else if(*(read_write_mmap + 1) >= *(read_write_mmap + 2) && *(read_write_mmap + 1) + (long)strlen(out) >= (long)(pbcf->mmap_dat_size)){
-					if((long)strlen(out) < *(read_write_mmap + 2)){
-						strcpy(write_file, out);
-						*(read_write_mmap + 1) = strlen(out);
+					if(((long)strlen(out) - ((long)(pbcf->mmap_dat_size) - *(read_write_mmap + 1)))< *(read_write_mmap + 2)){
+						strncpy(write_file + *(read_write_mmap + 1), out, (long)(pbcf->mmap_dat_size) - *(read_write_mmap + 1));
+						strcpy(write_file, out + (long)(pbcf->mmap_dat_size) - *(read_write_mmap + 1));
+						*(read_write_mmap + 1) = strlen(out) - ((long)(pbcf->mmap_dat_size) - *(read_write_mmap + 1));
 					}
-					else{
-						strcpy(write_file + *(read_write_mmap + 1), out);
-						*(read_write_mmap + 1) = *(read_write_mmap + 1) + strlen(out);
-					}
+					//	else{
+					//		strcpy(write_file + *(read_write_mmap + 1), out);
+					//		*(read_write_mmap + 1) = *(read_write_mmap + 1) + strlen(out);
+					//	}
 				}
 				else if(*(read_write_mmap + 1) < *(read_write_mmap + 2) && *(read_write_mmap + 1) + (long)strlen(out) < *(read_write_mmap + 2)){
 					strcpy(write_file + *(read_write_mmap + 1), out);
 					*(read_write_mmap + 1) = *(read_write_mmap + 1) + strlen(out);
-					
+
 				}
 
 				//if((*(read_write_mmap + 1) >= *(read_write_mmap + 2) && *(read_write_mmap + 1) < (long)(pbcf->mmap_dat_size)) || (*(read_write_mmap + 1) < *(read_write_mmap + 2) && *(read_write_mmap + 1) + (long)strlen(out) < *(read_write_mmap + 2))){
@@ -364,7 +364,7 @@ void* send_info(void* arg){
 			}
 		}
 		else{
-			usleep(10);
+			usleep(10000);
 		}
 	}
 	//curl_easy_cleanup(curl);
@@ -386,7 +386,7 @@ int createdir(const char *pathname, ngx_cycle_t *cycle){
 	char dirname[256];
 	strcpy(dirname, pathname);
 	int i, len = strlen(dirname);
-	
+
 	len = strlen(dirname);
 	for(i = 1; i < len; i++){
 		if(dirname[i] == '/'){
@@ -443,6 +443,11 @@ int open_fifo(ngx_cycle_t *cycle){
 			*(read_write_mmap + 2) = 0;
 		}
 		read_write_mmap = (long*) mmap( NULL,sizeof(long)*3, PROT_READ|PROT_WRITE, MAP_SHARED, off_fd, 0);
+		if( *read_write_mmap != (long)pbcf->mmap_dat_size ){
+			*read_write_mmap = (unsigned int)pbcf->mmap_dat_size;
+			*(read_write_mmap + 1) = 0;
+			*(read_write_mmap + 2) = 0;
+		}
 	}
 	close(off_fd);
 
@@ -463,13 +468,13 @@ int open_fifo(ngx_cycle_t *cycle){
 			return -1;
 		}
 		if(get_file_size((char *)pbcf->mmap_dat.data) < (long)pbcf->mmap_dat_size){
-			lseek(fd, pbcf->mmap_dat_size, SEEK_SET);
+			lseek(fd, pbcf->mmap_dat_size - 1, SEEK_SET);
 			write(off_fd,"",1);
 			read_write_mmap = (long*) mmap(NULL, pbcf->mmap_dat_size, PROT_READ|PROT_WRITE, MAP_SHARED, off_fd, 0);
 		}
 		write_file = (char*) mmap(NULL, pbcf->mmap_dat_size, PROT_READ|PROT_WRITE, MAP_SHARED, fd, 0);
 	}
-			
+
 	close(fd);
 	return 0;
 }
