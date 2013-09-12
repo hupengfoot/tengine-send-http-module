@@ -31,6 +31,7 @@ static void ngx_proc_send_accept(ngx_event_t *ev);
 int createdir(const char *pathname, ngx_cycle_t *cycle);
 void* send_info(void* arg);
 int open_fifo(ngx_cycle_t *cycle);
+int recv_info();
 
 
 char buf[BUFSIZE][SENDOUTBUFSIZE + 1];
@@ -39,6 +40,7 @@ int end = 0;
 int filenum = 0;
 long* read_write_mmap = NULL; 
 char* write_file = NULL; 
+int cat_started = 0;
 
 extern int pipefd[2];
 
@@ -247,18 +249,20 @@ ngx_proc_send_process_init(ngx_cycle_t *cycle)
 	static ngx_int_t
 ngx_proc_send_loop(ngx_cycle_t *cycle)
 {
-	pthread_t tid;
-	int err = pthread_create(&tid, NULL, send_info, cycle);
-	if(err){
-		ngx_log_error(NGX_LOG_ERR, cycle->log, 0, "create send_info thread fail!" );
-	}
-	while(1){
-		while(read(pipefd[0], buf[end], SENDOUTBUFSIZE) > 0){
-			end = ( end + 1 ) % BUFSIZE;
-			if(end == start){
-				__sync_bool_compare_and_swap(&start, end, (end + 1) % BUFSIZE);
-			}
+	pthread_t rtid;
+	pthread_t stid;
+
+	if(!cat_started){
+		int err = pthread_create(&rtid, NULL, recv_info, NULL);
+		if(err){
+			ngx_log_error(NGX_LOG_ERR, cycle->log, 0, "create recv_info thread fail!" );
 		}
+		err = 0;
+		int err = pthread_create(&stid, NULL, send_info, cycle);
+		if(err){
+			ngx_log_error(NGX_LOG_ERR, cycle->log, 0, "create send_info thread fail!" );
+		}
+		cat_started = 1;
 	}
 	return NGX_OK;
 }
@@ -476,5 +480,17 @@ int open_fifo(ngx_cycle_t *cycle){
 	}
 
 	close(fd);
+	return 0;
+}
+
+int recv_info(){
+	while(1){
+		while(read(pipefd[0], buf[end], SENDOUTBUFSIZE) > 0){
+			end = ( end + 1 ) % BUFSIZE;
+			if(end == start){
+				__sync_bool_compare_and_swap(&start, end, (end + 1) % BUFSIZE);
+			}
+		}
+	}
 	return 0;
 }
