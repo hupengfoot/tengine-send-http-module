@@ -31,7 +31,7 @@ static void ngx_proc_send_accept(ngx_event_t *ev);
 int createdir(const char *pathname, ngx_cycle_t *cycle);
 void* send_info(void* arg);
 int open_fifo(ngx_cycle_t *cycle);
-int recv_info();
+void* recv_info();
 
 
 char buf[BUFSIZE][SENDOUTBUFSIZE + 1];
@@ -253,13 +253,12 @@ ngx_proc_send_loop(ngx_cycle_t *cycle)
 	pthread_t stid;
 
 	if(!cat_started){
-		int err = pthread_create(&rtid, NULL, recv_info, NULL);
-		if(err){
+		int err1 = pthread_create(&rtid, NULL, recv_info, NULL);
+		if(err1){
 			ngx_log_error(NGX_LOG_ERR, cycle->log, 0, "create recv_info thread fail!" );
 		}
-		err = 0;
-		int err = pthread_create(&stid, NULL, send_info, cycle);
-		if(err){
+		int err2 = pthread_create(&stid, NULL, send_info, cycle);
+		if(err2){
 			ngx_log_error(NGX_LOG_ERR, cycle->log, 0, "create send_info thread fail!" );
 		}
 		cat_started = 1;
@@ -483,7 +482,7 @@ int open_fifo(ngx_cycle_t *cycle){
 	return 0;
 }
 
-int recv_info(){
+void* recv_info(){
 	while(1){
 		while(read(pipefd[0], buf[end], SENDOUTBUFSIZE) > 0){
 			end = ( end + 1 ) % BUFSIZE;
